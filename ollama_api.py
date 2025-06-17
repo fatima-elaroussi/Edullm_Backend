@@ -7,7 +7,8 @@ class OllamaAPI:
 
     def chat_with_ollama(self, prompt):
         payload = {
-            "model": "deepseek-r1",
+            "model": "gemma3:4b", 
+            # "model": "deepseek-r1",
             "prompt": prompt,
             "stream": True
         }

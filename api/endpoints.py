@@ -40,6 +40,62 @@ def register_user(data: RegisterRequest):
         return result
     raise HTTPException(status_code=400, detail=result["message"])
 
+# Add these endpoints to your existing router in the main file
+
+@router.get("/users", response_model=List[Dict])
+def get_all_users():
+    """Get all users"""
+    users = filter_manager.get_all_users()
+    if not users:
+        raise HTTPException(status_code=404, detail="No users found.")
+    return users
+
+@router.get("/users/{user_id}", response_model=Dict)
+def get_user(user_id: int):
+    """Get a specific user by ID"""
+    user = filter_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return user
+
+@router.put("/users/{user_id}")
+def update_user(user_id: int, data: UpdateUserRequest):
+    """Update a user"""
+    result = filter_manager.update_user(user_id, data)
+    if result["status"] == "error":
+        if "not found" in result["message"].lower():
+            raise HTTPException(status_code=404, detail=result["message"])
+        else:
+            raise HTTPException(status_code=400, detail=result["message"])
+    return result
+
+@router.delete("/users/{user_id}")
+def delete_user(user_id: int):
+    """Delete a user"""
+    result = filter_manager.delete_user(user_id)
+    if result["status"] == "error":
+        if "not found" in result["message"].lower():
+            raise HTTPException(status_code=404, detail=result["message"])
+        else:
+            raise HTTPException(status_code=400, detail=result["message"])
+    return result
+
+@router.get("/users/profile/{profile_id}")
+def get_users_by_profile(profile_id: int):
+    """Get all users by profile ID"""
+    users = filter_manager.get_users_by_profile(profile_id)
+    if not users:
+        raise HTTPException(status_code=404, detail="No users found for this profile.")
+    return users
+
+@router.get("/users/filiere/{filiere_id}")
+def get_users_by_filiere(filiere_id: int):
+    """Get all users by filière ID"""
+    users = filter_manager.get_users_by_filiere(filiere_id)
+    if not users:
+        raise HTTPException(status_code=404, detail="No users found for this filière.")
+    return users
+
 # @router.post("/chat", response_model=ChatResponse)
 # def chat_with_context(data: ChatRequest):
 #     response = chatbot.generate_response(
@@ -306,3 +362,52 @@ def update_activite(id: int, data: Activite):
 def delete_activite(id: int):
     deleted = resource_manager.delete_activite(id)
     return {"deleted": deleted}
+# Add these endpoints to your FastAPI router
+
+@router.get("/debug/document/{file_hash}")
+def debug_document_info(file_hash: str):
+    """Debug endpoint to check document information"""
+    try:
+        # Check ChromaDB
+        results = chatbot.collection.get(where={"file_hash": file_hash})
+        
+        return {
+            "file_hash": file_hash,
+            "exists_in_chromadb": len(results['ids']) > 0,
+            "chunk_count": len(results['ids']),
+            "sample_metadata": results['metadatas'][0] if results['metadatas'] else None,
+            "sample_document": results['documents'][0][:200] + "..." if results['documents'] else None
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.get("/debug/collection/stats")
+def debug_collection_stats():
+    """Debug endpoint to get collection statistics"""
+    try:
+        # Get collection info
+        collection_info = chatbot.collection.peek()
+        return {
+            "total_documents": len(collection_info['ids']),
+            "sample_ids": collection_info['ids'][:10],
+            "unique_file_hashes": len(set(
+                metadata.get('file_hash', '') 
+                for metadata in collection_info['metadatas'] 
+                if metadata
+            ))
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.delete("/debug/document/{file_hash}")
+def debug_delete_document(file_hash: str):
+    """Debug endpoint to delete a document by hash"""
+    try:
+        results = chatbot.collection.get(where={"file_hash": file_hash})
+        if results['ids']:
+            chatbot.collection.delete(ids=results['ids'])
+            return {"message": f"Deleted {len(results['ids'])} chunks for hash {file_hash}"}
+        else:
+            return {"message": "No document found with that hash"}
+    except Exception as e:
+        return {"error": str(e)}

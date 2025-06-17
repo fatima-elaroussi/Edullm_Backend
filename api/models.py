@@ -85,3 +85,18 @@ class Activite(BaseModel):
          id: Optional[int] = None
          nom: str
          module_id: int
+
+class UpdateUserRequest(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    profile_id: Optional[int] = None
+    filiere_id: Optional[int] = None
+    annee: Optional[str] = None
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    profile_id: int
+    filiere_id: Optional[int]
+    annee_scolaire: Optional[str]
+    created_at: Optional[str] = None
