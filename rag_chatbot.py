@@ -7,7 +7,8 @@ from utils.filter_manager import FilterManager
 import json
 from datetime import datetime
 import logging
-
+from typing import List
+import urllib.parse
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,6 @@ class RAGChatbot:
         return embedding / norm if norm > 0 else embedding
 
     def check_if_document_exists(self, file_hash):
-        """Check if document with given hash already exists in ChromaDB"""
         try:
             results = self.collection.get(where={"file_hash": file_hash})
             return len(results['ids']) > 0
@@ -35,7 +35,6 @@ class RAGChatbot:
             return False
 
     def delete_existing_document(self, file_hash):
-        """Delete existing document chunks from ChromaDB"""
         try:
             results = self.collection.get(where={"file_hash": file_hash})
             if results['ids']:
@@ -48,21 +47,16 @@ class RAGChatbot:
         try:
             chunks, file_hash = self.file_processor.process_file(file_path)
 
-            # Check if file was already processed by file processor
             if chunks is None:
-                # Check if it exists in ChromaDB anyway
                 if self.check_if_document_exists(file_hash):
                     return {"status": "error", "message": f"File {file_path} already processed and exists in database."}
                 else:
-                    # File was processed before but not in ChromaDB, reprocess it
                     content = self.file_processor.read_file(file_path)
                     file_hash = self.file_processor.calculate_hash(content)
-                    # Force reprocessing by removing from processed hashes
                     if file_hash in self.file_processor.processed_hashes:
                         self.file_processor.processed_hashes.remove(file_hash)
                     chunks, file_hash = self.file_processor.process_file(file_path)
 
-            # If document exists in ChromaDB, delete it first to avoid duplicates
             if self.check_if_document_exists(file_hash):
                 self.delete_existing_document(file_hash)
 
@@ -80,13 +74,11 @@ class RAGChatbot:
                 "user_id": user_id
             } for i in range(len(chunks))]
 
-            # Store metadata in SQLite
             for i, chunk in enumerate(chunks):
                 self.filter_manager.insert_metadata_sqlite(
                     base_filename, file_hash, i, chunk, departement_id, filiere_id, module_id, activite_id, profile_id, user_id
                 )
 
-            # Add to ChromaDB
             self.collection.add(
                 documents=chunks,
                 embeddings=embeddings,
@@ -153,37 +145,40 @@ class RAGChatbot:
         )
         return response
 
-    def generate_summary(self, file_hash, level="simplified"):
+    def generate_summary(self, file_hashes: List[str], level="simplified"):
         try:
-            # First check if any documents exist for this hash
-            results = self.collection.get(where={"file_hash": file_hash})
+            if not file_hashes:
+                return "Aucun document sélectionné."
 
-            if not results['documents']:
-                return "Aucun document trouvé pour ce hash."
-
-            # Get all chunks for this file hash
-            chunks = results['documents']
-            logger.info(f"Found {len(chunks)} chunks for file hash {file_hash}")
+            # Retrieve all chunks for the given file hashes
+            chunks = []
+            missing_hashes = []
+            for file_hash in file_hashes:
+                results = self.collection.get(where={"file_hash": file_hash})
+                if not results['documents']:
+                    logger.warning(f"No documents found for hash {file_hash}")
+                    missing_hashes.append(file_hash)
+                    continue
+                chunks.extend(results['documents'])
 
             if not chunks:
-                return "Aucun document trouvé pour ce hash."
+                return f"Aucun document trouvé pour les hashes fournis: {', '.join(missing_hashes)}."
 
-            # Combine all chunks into full text
+            logger.info(f"Found {len(chunks)} chunks for file hashes {file_hashes}")
             full_text = "\n".join(chunks)
 
-            # Create appropriate prompt based on level
             if level == "simplified":
                 prompt = (
-                    f"Voici le contenu d'un document académique :\n\n{full_text}\n\n"
-                    f"Génère un résumé simplifié de ce document. "
+                    f"Voici le contenu de plusieurs documents académiques :\n\n{full_text}\n\n"
+                    f"Génère un résumé simplifié de ces documents. "
                     f"Concentre-toi sur les idées principales et utilise un langage clair et concis. "
                     f"Structure le résumé avec des points clés. "
                     f"Réponse en français :"
                 )
             else:
                 prompt = (
-                    f"Voici le contenu d'un document académique :\n\n{full_text}\n\n"
-                    f"Génère un résumé détaillé de ce document. "
+                    f"Voici le contenu de plusieurs documents académiques :\n\n{full_text}\n\n"
+                    f"Génère un résumé détaillé de ces documents. "
                     f"Inclus tous les détails importants et structure les sous-sections pertinentes. "
                     f"Organise le résumé de manière hiérarchique avec des sections et sous-sections. "
                     f"Réponse en français :"
@@ -200,54 +195,29 @@ class RAGChatbot:
         except Exception as e:
             logger.error(f"Error generating summary: {e}")
             return f"Erreur lors de la génération du résumé: {str(e)}"
-    # def generate_quiz(self, file_hash, num_questions=5, bloom_level=None):
+
+    def generate_quiz(self, file_hashes: List[str], num_questions=5, bloom_level=None):
         try:
-            results = self.collection.get(where={"file_hash": file_hash})
-            
-            if not results['documents']:
-                return {"status": "error", "message": "Aucun document trouvé pour ce hash."}
-            
-            chunks = results['documents']
-            full_text = "\n".join(chunks)
-            
-            bloom_instruction = ""
-            if bloom_level:
-                bloom_instruction = f"Les questions doivent correspondre au niveau de la taxonomie de Bloom : {bloom_level}. "
-            else:
-                bloom_instruction = "Inclure un mélange de questions de connaissance, compréhension et application. "
-            
-            prompt = (
-                f"Voici le contenu d'un document :\n\n{full_text}\n\n"
-                f"Génère {num_questions} questions QCM basées sur le contenu du document. "
-                f"Chaque question doit avoir 4 options de réponse, avec une seule réponse correcte. "
-                f"{bloom_instruction}"
-                f"Retourne les questions au format JSON avec les champs : question, options (liste), correct_answer (index), bloom_level.\n"
-                f"Exemple de format :\n"
-                f'{{"questions": [{{"question": "Quelle est...", "options": ["A", "B", "C", "D"], "correct_answer": 0, "bloom_level": "knowledge"}}]}}\n'
-                f"Réponse :"
-            )
-            
-            response = self.ollama_api.chat_with_ollama(prompt)
-            
-            try:
-                questions = json.loads(response)
-                return questions
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse JSON response: {response}")
-                return {"status": "error", "message": "Erreur lors de la génération des questions."}
-                
-        except Exception as e:
-            logger.error(f"Error generating quiz: {e}")
-            return {"status": "error", "message": f"Erreur lors de la génération du quiz: {str(e)}"}
+            if not file_hashes:
+                return {"status": "error", "message": "Aucun document sélectionné."}
 
-    def generate_quiz(self, file_hash, num_questions=5, bloom_level=None):
-        try:
-            results = self.collection.get(where={"file_hash": file_hash})
+            # Retrieve all chunks for the given file hashes
+            chunks = []
+            missing_hashes = []
+            chunk_counts = {}
+            for file_hash in file_hashes:
+                results = self.collection.get(where={"file_hash": file_hash})
+                if not results['documents']:
+                    logger.warning(f"No documents found for hash {file_hash}")
+                    missing_hashes.append(file_hash)
+                    continue
+                chunk_counts[file_hash] = len(results['documents'])
+                chunks.extend(results['documents'])
 
-            if not results['documents']:
-                return {"status": "error", "message": "Aucun document trouvé pour ce hash."}
+            if not chunks:
+                return {"status": "error", "message": f"Aucun document trouvé pour les hashes fournis: {', '.join(missing_hashes)}."}
 
-            chunks = results['documents']
+            logger.info(f"Found {len(chunks)} chunks for file hashes {file_hashes}: {chunk_counts}")
             full_text = "\n".join(chunks)
 
             bloom_instruction = ""
@@ -257,52 +227,67 @@ class RAGChatbot:
                 bloom_instruction = "Inclure un mélange de questions de connaissance, compréhension et application. "
 
             prompt = (
-                f"Voici le contenu d'un document :\n\n{full_text}\n\n"
-                f"Génère {num_questions} questions QCM basées sur le contenu du document. "
+                f"Voici le contenu de plusieurs documents :\n\n{full_text}\n\n"
+                f"Génère EXACTEMENT {num_questions} questions QCM basées sur le contenu des documents. "
                 f"Chaque question doit avoir 4 options de réponse, avec une seule réponse correcte. "
                 f"{bloom_instruction}"
-                f"IMPORTANT: Retourne UNIQUEMENT le JSON valide, sans formatage markdown, sans ```json ni ```. "
-                f"Format exact requis :\n"
+                f"IMPORTANT: Le champ 'bloom_level' doit être EXACTEMENT l'un des suivants : 'knowledge', 'comprehension', 'application'. "
+                f"Ne pas utiliser d'autres termes comme 'understanding'. "
+                f"Retourne UNIQUEMENT un objet JSON valide avec la structure exacte suivante, SANS tableau extérieur, SANS formatage markdown, SANS ```json ni ``` :\n"
                 f'{{"questions": [{{"question": "Quelle est...", "options": ["A", "B", "C", "D"], "correct_answer": 0, "bloom_level": "knowledge"}}]}}\n'
+                f"Exemple de réponse JSON correcte :\n"
+                f'{{"questions": [{{"question": "Exemple de question", "options": ["A", "B", "C", "D"], "correct_answer": 0, "bloom_level": "knowledge"}}]}}\n'
                 f"Réponse JSON :"
             )
 
             response = self.ollama_api.chat_with_ollama(prompt)
             logger.info(f"Raw quiz response: {response}")
 
-            # Clean the response by removing markdown formatting
             cleaned_response = self._clean_json_response(response)
             logger.info(f"Cleaned quiz response: {cleaned_response}")
 
             try:
                 questions = json.loads(cleaned_response)
 
-                # Validate the structure
+                # Handle case where response is an array of questions
+                if isinstance(questions, list):
+                    questions = {"questions": questions[:num_questions]}  # Limit to num_questions
+                    logger.info(f"Converted array to questions object with {len(questions['questions'])} questions")
+
+                logger.info(f"Parsed JSON: {json.dumps(questions, indent=2)}")
+
                 if not isinstance(questions, dict) or "questions" not in questions:
-                    raise ValueError("Invalid JSON structure")
+                    raise ValueError("Invalid JSON structure: expected object with 'questions' key")
 
                 if not isinstance(questions["questions"], list):
-                    raise ValueError("Questions should be a list")
+                    raise ValueError("Questions must be a list")
 
-                # Validate each question
-                for i, q in enumerate(questions["questions"]):
+                if len(questions["questions"]) != num_questions:
+                    logger.warning(f"Received {len(questions['questions'])} questions, expected {num_questions}")
+
+                # Validate and normalize questions
+                for q in questions["questions"]:
+                    if q.get("bloom_level") == "understanding":
+                        q["bloom_level"] = "comprehension"
+                        logger.info(f"Mapped 'understanding' to 'comprehension' for question: {q['question']}")
+
                     required_fields = ["question", "options", "correct_answer", "bloom_level"]
                     for field in required_fields:
                         if field not in q:
-                            raise ValueError(f"Missing field '{field}' in question {i+1}")
+                            raise ValueError(f"Missing field '{field}' in question")
 
                     if not isinstance(q["options"], list) or len(q["options"]) != 4:
-                        raise ValueError(f"Question {i+1} must have exactly 4 options")
+                        raise ValueError(f"Question must have exactly 4 options")
 
                     if not isinstance(q["correct_answer"], int) or q["correct_answer"] not in [0, 1, 2, 3]:
-                        raise ValueError(f"Question {i+1} correct_answer must be 0, 1, 2, or 3")
+                        raise ValueError(f"Correct_answer must be 0, 1, 2, or 3")
 
-                return questions["questions"]  # Return just the questions array
+                return questions["questions"]
 
             except json.JSONDecodeError as e:
                 logger.error(f"JSON parsing failed: {e}")
                 logger.error(f"Attempted to parse: {cleaned_response}")
-                return {"status": "error", "message": "Erreur lors de la génération des questions - format JSON invalide."}
+                return {"status": "error", "message": f"Erreur lors de la génération des questions - format JSON invalide: {str(e)}"}
             except ValueError as e:
                 logger.error(f"JSON validation failed: {e}")
                 return {"status": "error", "message": f"Erreur lors de la validation des questions: {str(e)}"}
@@ -312,30 +297,47 @@ class RAGChatbot:
             return {"status": "error", "message": f"Erreur lors de la génération du quiz: {str(e)}"}
 
     def _clean_json_response(self, response):
-        """Clean the response from Ollama to extract pure JSON"""
-        # Remove leading/trailing whitespace
-        cleaned = response.strip()
+        cleaned = str(response).strip()
 
-        # Remove markdown code blocks
+        # Remove markdown code fences
         if cleaned.startswith('```json'):
-            cleaned = cleaned[7:]  # Remove ```json
+            cleaned = cleaned[7:]
         elif cleaned.startswith('```'):
-            cleaned = cleaned[3:]  # Remove ```
+            cleaned = cleaned[3:]
 
         if cleaned.endswith('```'):
-            cleaned = cleaned[:-3]  # Remove ending ```
+            cleaned = cleaned[:-3]
 
-        # Remove any remaining whitespace
         cleaned = cleaned.strip()
-
-        # Try to find JSON content between curly braces if still problematic
-        start_idx = cleaned.find('{')
-        end_idx = cleaned.rfind('}')
-
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            cleaned = cleaned[start_idx:end_idx + 1]
-
+        logger.info(f"Cleaned JSON response: {cleaned}")
         return cleaned
+
+    # def recommend_resources(self, user_id, filiere_id, module_id):
+    #     try:
+    #         gaps = self.filter_manager.analyze_gaps(user_id, filiere_id, module_id)
+    #         if not gaps:
+    #             return []
+
+    #         from googleapiclient.discovery import build
+    #         youtube = build('youtube', 'v3', developerKey='YOUR_YOUTUBE_API_KEY')
+
+    #         resources = []
+    #         for gap in gaps:
+    #             query = f"{gap} tutorial BDIA"
+    #             request = youtube.search().list(q=query, part='snippet', maxResults=3)
+    #             response = request.execute()
+
+    #             for item in response['items']:
+    #                 if 'videoId' in item['id']:
+    #                     resources.append({
+    #                         "title": item['snippet']['title'],
+    #                         "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}"
+    #                     })
+    #         return resources
+
+    #     except Exception as e:
+    #         logger.error(f"Error recommending resources: {e}")
+    #         return []
 
     def recommend_resources(self, user_id, filiere_id, module_id):
         try:
@@ -343,22 +345,18 @@ class RAGChatbot:
             if not gaps:
                 return []
 
-            # NOTE: Ensure you have a valid YouTube API key
-            from googleapiclient.discovery import build
-            youtube = build('youtube', 'v3', developerKey='YOUR_YOUTUBE_API_KEY')
-
             resources = []
             for gap in gaps:
-                query = f"{gap} tutorial BDIA"
-                request = youtube.search().list(q=query, part='snippet', maxResults=3)
-                response = request.execute()
+                query = f"{gap} tutoriel BDIA"
+                encoded_query = urllib.parse.quote(query)
+                youtube_search_url = f"https://www.youtube.com/results?search_query={encoded_query}"
 
-                for item in response['items']:
-                    if 'videoId' in item['id']:
-                        resources.append({
-                            "title": item['snippet']['title'],
-                            "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}"
-                        })
+                # On simule une ressource en retournant le lien de recherche
+                resources.append({
+                    "title": f"Tutoriels YouTube pour : {gap}",
+                    "url": youtube_search_url
+                })
+
             return resources
 
         except Exception as e:
@@ -366,7 +364,6 @@ class RAGChatbot:
             return []
 
     def get_document_info(self, file_hash):
-        """Get information about a document by its hash"""
         try:
             results = self.collection.get(where={"file_hash": file_hash})
             if results['documents']:

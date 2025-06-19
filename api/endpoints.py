@@ -10,6 +10,7 @@ from utils.filter_manager import FilterManager
 from utils.ResourceManager import ResourceManager
 from typing import List, Dict, Optional
 import logging
+import sqlite3
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,6 +25,36 @@ resource_manager = ResourceManager("./bdd/chatbot_metadata.db")
 def login(data: LoginRequest):
     user_info = filter_manager.authenticate(data.username, data.password)
     if user_info:
+        conn = sqlite3.connect("./bdd/chatbot_metadata.db")
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT departement_id FROM filieres WHERE id = ?", (user_info["filiere_id"],))
+            departement_row = cursor.fetchone()
+            departement_id = departement_row["departement_id"] if departement_row else None
+
+            module_id = None
+            if user_info["filiere_id"]:
+                cursor.execute("SELECT id FROM modules WHERE filiere_id = ? LIMIT 1", (user_info["filiere_id"],))
+                module_row = cursor.fetchone()
+                module_id = module_row["id"] if module_row else None
+
+            activite_id = None
+            if module_id:
+                cursor.execute("SELECT id FROM activites WHERE module_id = ? LIMIT 1", (module_id,))
+                activite_row = cursor.fetchone()
+                activite_id = activite_row["id"] if activite_row else None
+
+            user_info.update({
+                "departement_id": departement_id,
+                "module_id": module_id,
+                "activite_id": activite_id
+            })
+        except Exception as e:
+            logger.error(f"Error fetching context for user {user_info['user_id']}: {e}")
+        finally:
+            conn.close()
+        
         return {"status": "success", "user_info": user_info}
     raise HTTPException(status_code=401, detail="Invalid username or password")
 
@@ -40,11 +71,8 @@ def register_user(data: RegisterRequest):
         return result
     raise HTTPException(status_code=400, detail=result["message"])
 
-# Add these endpoints to your existing router in the main file
-
 @router.get("/users", response_model=List[Dict])
 def get_all_users():
-    """Get all users"""
     users = filter_manager.get_all_users()
     if not users:
         raise HTTPException(status_code=404, detail="No users found.")
@@ -52,7 +80,6 @@ def get_all_users():
 
 @router.get("/users/{user_id}", response_model=Dict)
 def get_user(user_id: int):
-    """Get a specific user by ID"""
     user = filter_manager.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
@@ -60,7 +87,6 @@ def get_user(user_id: int):
 
 @router.put("/users/{user_id}")
 def update_user(user_id: int, data: UpdateUserRequest):
-    """Update a user"""
     result = filter_manager.update_user(user_id, data)
     if result["status"] == "error":
         if "not found" in result["message"].lower():
@@ -71,7 +97,6 @@ def update_user(user_id: int, data: UpdateUserRequest):
 
 @router.delete("/users/{user_id}")
 def delete_user(user_id: int):
-    """Delete a user"""
     result = filter_manager.delete_user(user_id)
     if result["status"] == "error":
         if "not found" in result["message"].lower():
@@ -82,7 +107,6 @@ def delete_user(user_id: int):
 
 @router.get("/users/profile/{profile_id}")
 def get_users_by_profile(profile_id: int):
-    """Get all users by profile ID"""
     users = filter_manager.get_users_by_profile(profile_id)
     if not users:
         raise HTTPException(status_code=404, detail="No users found for this profile.")
@@ -90,37 +114,60 @@ def get_users_by_profile(profile_id: int):
 
 @router.get("/users/filiere/{filiere_id}")
 def get_users_by_filiere(filiere_id: int):
-    """Get all users by filière ID"""
     users = filter_manager.get_users_by_filiere(filiere_id)
     if not users:
         raise HTTPException(status_code=404, detail="No users found for this filière.")
     return users
 
-# @router.post("/chat", response_model=ChatResponse)
-# def chat_with_context(data: ChatRequest):
-#     response = chatbot.generate_response(
-#         user_query=data.message,
-#         departement_id=data.departement_id,
-#         filiere_id=data.filiere_id,
-#         module_id=data.module_id,
-#         activite_id=data.activite_id,
-#         profile_id=data.profile_id,
-#         user_id=data.user_id
-#     )
-#     return {"response": response}
-
 @router.post("/chat", response_model=ChatResponse)
 def chat_with_context(data: ChatRequest):
     logger.info(f"Received chat request: {data.dict()}")
     try:
+        departement_id = data.departement_id
+        filiere_id = data.filiere_id
+        module_id = data.module_id
+        activite_id = data.activite_id
+        profile_id = data.profile_id
+        user_id = data.user_id
+
+        if not all([departement_id, filiere_id, module_id, activite_id]) and user_id:
+            user = filter_manager.get_user_by_id(user_id)
+            if user:
+                filiere_id = filiere_id or user.get("filiere_id")
+                conn = sqlite3.connect("./bdd/chatbot_metadata.db")
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("SELECT departement_id FROM filieres WHERE id = ?", (filiere_id,))
+                    dep_row = cursor.fetchone()
+                    departement_id = departement_id or (dep_row["departement_id"] if dep_row else None)
+
+                    cursor.execute("SELECT id FROM modules WHERE filiere_id = ? LIMIT 1", (filiere_id,))
+                    mod_row = cursor.fetchone()
+                    module_id = module_id or (mod_row["id"] if mod_row else None)
+
+                    cursor.execute("SELECT id FROM activites WHERE module_id = ? LIMIT 1", (module_id,) if module_id else (0,))
+                    act_row = cursor.fetchone()
+                    activite_id = activite_id or (act_row["id"] if act_row else None)
+
+                    profile_id = profile_id or user.get("profile_id")
+                finally:
+                    conn.close()
+
+        if not all([profile_id, user_id]):
+            raise HTTPException(status_code=400, detail="User ID and profile ID are required")
+
+        if not all([departement_id, filiere_id, module_id, activite_id]):
+            logger.warning(f"Incomplete context for user {user_id}: dept={departement_id}, fil={filiere_id}, mod={module_id}, act={activite_id}")
+
         response = chatbot.generate_response(
             user_query=data.message,
-            departement_id=data.departement_id,
-            filiere_id=data.filiere_id,
-            module_id=data.module_id,
-            activite_id=data.activite_id,
-            profile_id=data.profile_id,
-            user_id=data.user_id
+            departement_id=departement_id,
+            filiere_id=filiere_id,
+            module_id=module_id,
+            activite_id=activite_id,
+            profile_id=profile_id,
+            user_id=user_id
         )
         logger.info(f"Chat response generated: {response}")
         return {"response": response}
@@ -128,15 +175,12 @@ def chat_with_context(data: ChatRequest):
         logger.error(f"Error in chat endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
-        # Create uploads directory if it doesn't exist
         upload_dir = Path("uploads")
         upload_dir.mkdir(exist_ok=True)
         
-        # Save the uploaded file
         file_path = upload_dir / file.filename
         
         with open(file_path, "wb") as buffer:
@@ -152,7 +196,6 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
 
-# Alternative: Modify your existing ingest endpoint to handle file upload directly
 @router.post("/ingest")
 async def ingest_document_with_upload(
     file: UploadFile = File(...),
@@ -164,17 +207,14 @@ async def ingest_document_with_upload(
     user_id: int = Form(...)
 ):
     try:
-        # Create uploads directory if it doesn't exist
         upload_dir = Path("uploads")
         upload_dir.mkdir(exist_ok=True)
         
-        # Save the uploaded file
         file_path = upload_dir / file.filename
         
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        # Now process the file
         result = chatbot.ingestion_file(
             base_filename=file.filename,
             file_path=str(file_path),
@@ -186,31 +226,12 @@ async def ingest_document_with_upload(
             user_id=user_id
         )
         
-        # Optionally delete the file after processing
-        # os.remove(file_path)
-        
         if result["status"] == "success":
             return result
         raise HTTPException(status_code=400, detail=result["message"])
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
-
-# @router.post("/ingest")
-# def ingest_document(data: IngestRequest):
-#     result = chatbot.ingestion_file(
-#         base_filename=data.base_filename,
-#         file_path=data.file_path,
-#         departement_id=data.departement_id,
-#         filiere_id=data.filiere_id,
-#         module_id=data.module_id,
-#         activite_id=data.activite_id,
-#         profile_id=data.profile_id,
-#         user_id=data.user_id
-#     )
-#     if result["status"] == "success":
-#         return result
-#     raise HTTPException(status_code=400, detail=result["message"])
 
 @router.get("/ingested", response_model=List[Dict])
 def get_documents():
@@ -232,14 +253,14 @@ def get_chat_history_endpoint(profile_id: int, user_id: int, departement_id: Opt
 
 @router.post("/summarize")
 def summarize_document(data: SummarizeRequest):
-    summary = chatbot.generate_summary(data.file_hash, data.level)
+    summary = chatbot.generate_summary(data.file_hashes, data.level)
     if "Aucun document" in summary:
         raise HTTPException(status_code=404, detail=summary)
     return {"summary": summary}
 
 @router.post("/quiz", response_model=QuizResponse)
 def generate_quiz_endpoint(data: QuizRequest):
-    questions = chatbot.generate_quiz(data.file_hash, data.num_questions, data.bloom_level)
+    questions = chatbot.generate_quiz(data.file_hashes, data.num_questions, data.bloom_level)
     if isinstance(questions, dict) and questions["status"] == "error":
         raise HTTPException(status_code=400, detail=questions["message"])
     return {"questions": questions}
@@ -362,13 +383,10 @@ def update_activite(id: int, data: Activite):
 def delete_activite(id: int):
     deleted = resource_manager.delete_activite(id)
     return {"deleted": deleted}
-# Add these endpoints to your FastAPI router
 
 @router.get("/debug/document/{file_hash}")
 def debug_document_info(file_hash: str):
-    """Debug endpoint to check document information"""
     try:
-        # Check ChromaDB
         results = chatbot.collection.get(where={"file_hash": file_hash})
         
         return {
@@ -383,9 +401,7 @@ def debug_document_info(file_hash: str):
 
 @router.get("/debug/collection/stats")
 def debug_collection_stats():
-    """Debug endpoint to get collection statistics"""
     try:
-        # Get collection info
         collection_info = chatbot.collection.peek()
         return {
             "total_documents": len(collection_info['ids']),
@@ -401,7 +417,6 @@ def debug_collection_stats():
 
 @router.delete("/debug/document/{file_hash}")
 def debug_delete_document(file_hash: str):
-    """Debug endpoint to delete a document by hash"""
     try:
         results = chatbot.collection.get(where={"file_hash": file_hash})
         if results['ids']:
