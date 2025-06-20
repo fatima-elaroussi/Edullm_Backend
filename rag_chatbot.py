@@ -9,6 +9,7 @@ from datetime import datetime
 import logging
 from typing import List
 import urllib.parse
+import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -201,10 +202,11 @@ class RAGChatbot:
             if not file_hashes:
                 return {"status": "error", "message": "Aucun document sélectionné."}
 
-            # Retrieve all chunks for the given file hashes
+            # Récupérer les chunks associés
             chunks = []
             missing_hashes = []
             chunk_counts = {}
+
             for file_hash in file_hashes:
                 results = self.collection.get(where={"file_hash": file_hash})
                 if not results['documents']:
@@ -220,23 +222,23 @@ class RAGChatbot:
             logger.info(f"Found {len(chunks)} chunks for file hashes {file_hashes}: {chunk_counts}")
             full_text = "\n".join(chunks)
 
-            bloom_instruction = ""
-            if bloom_level:
-                bloom_instruction = f"Les questions doivent correspondre au niveau de la taxonomie de Bloom : {bloom_level}. "
-            else:
-                bloom_instruction = "Inclure un mélange de questions de connaissance, compréhension et application. "
+            # Déterminer le niveau Bloom
+            bloom_instruction = (
+                f"Les questions doivent correspondre au niveau de la taxonomie de Bloom : {bloom_level}. "
+                if bloom_level else
+                "Inclure un mélange de questions de connaissance, compréhension et application. "
+            )
 
+            # Préparer le prompt
             prompt = (
                 f"Voici le contenu de plusieurs documents :\n\n{full_text}\n\n"
-                f"Génère EXACTEMENT {num_questions} questions QCM basées sur le contenu des documents. "
-                f"Chaque question doit avoir 4 options de réponse, avec une seule réponse correcte. "
+                f"Génère EXACTEMENT {num_questions} questions QCM basées sur ce contenu. "
+                f"Chaque question doit avoir 4 options de réponse TEXTUELLES et SIGNIFICATIVES, avec une seule réponse correcte. "
                 f"{bloom_instruction}"
                 f"IMPORTANT: Le champ 'bloom_level' doit être EXACTEMENT l'un des suivants : 'knowledge', 'comprehension', 'application'. "
                 f"Ne pas utiliser d'autres termes comme 'understanding'. "
-                f"Retourne UNIQUEMENT un objet JSON valide avec la structure exacte suivante, SANS tableau extérieur, SANS formatage markdown, SANS ```json ni ``` :\n"
-                f'{{"questions": [{{"question": "Quelle est...", "options": ["A", "B", "C", "D"], "correct_answer": 0, "bloom_level": "knowledge"}}]}}\n'
-                f"Exemple de réponse JSON correcte :\n"
-                f'{{"questions": [{{"question": "Exemple de question", "options": ["A", "B", "C", "D"], "correct_answer": 0, "bloom_level": "knowledge"}}]}}\n'
+                f"Retourne UNIQUEMENT un objet JSON valide, sans markdown, sans ```json ni ``` :\n"
+                f'{{"questions": [{{"question": "...", "options": ["...", "...", "...", "..."], "correct_answer": int entre 0 et 3, "bloom_level": "knowledge"}}, ...]}}\n'
                 f"Réponse JSON :"
             )
 
@@ -249,68 +251,175 @@ class RAGChatbot:
             try:
                 questions = json.loads(cleaned_response)
 
-                # Handle case where response is an array of questions
+                # Accepte aussi les tableaux bruts
                 if isinstance(questions, list):
-                    questions = {"questions": questions[:num_questions]}  # Limit to num_questions
-                    logger.info(f"Converted array to questions object with {len(questions['questions'])} questions")
+                    questions = {"questions": questions[:num_questions]}
 
                 logger.info(f"Parsed JSON: {json.dumps(questions, indent=2)}")
 
                 if not isinstance(questions, dict) or "questions" not in questions:
-                    raise ValueError("Invalid JSON structure: expected object with 'questions' key")
+                    raise ValueError("Structure JSON invalide : il manque la clé 'questions'.")
 
                 if not isinstance(questions["questions"], list):
-                    raise ValueError("Questions must be a list")
+                    raise ValueError("Le champ 'questions' doit être une liste.")
 
                 if len(questions["questions"]) != num_questions:
-                    logger.warning(f"Received {len(questions['questions'])} questions, expected {num_questions}")
+                    logger.warning(f"Nombre de questions retournées incorrect : {len(questions['questions'])} au lieu de {num_questions}")
 
-                # Validate and normalize questions
+                # Validation stricte
                 for q in questions["questions"]:
                     if q.get("bloom_level") == "understanding":
                         q["bloom_level"] = "comprehension"
-                        logger.info(f"Mapped 'understanding' to 'comprehension' for question: {q['question']}")
 
-                    required_fields = ["question", "options", "correct_answer", "bloom_level"]
-                    for field in required_fields:
+                    for field in ["question", "options", "correct_answer", "bloom_level"]:
                         if field not in q:
-                            raise ValueError(f"Missing field '{field}' in question")
+                            raise ValueError(f"Champ manquant : '{field}'")
 
                     if not isinstance(q["options"], list) or len(q["options"]) != 4:
-                        raise ValueError(f"Question must have exactly 4 options")
+                        raise ValueError("Chaque question doit avoir exactement 4 options.")
 
-                    if not isinstance(q["correct_answer"], int) or q["correct_answer"] not in [0, 1, 2, 3]:
-                        raise ValueError(f"Correct_answer must be 0, 1, 2, or 3")
+                    # Rejeter les options génériques (ex: juste "A", "B", ...)
+                    if all(opt.strip().upper() in {"A", "B", "C", "D"} for opt in q["options"]):
+                        raise ValueError(f"Les options de la question '{q['question']}' sont trop génériques.")
+
+                    if not isinstance(q["correct_answer"], int) or q["correct_answer"] not in range(4):
+                        raise ValueError("Le champ 'correct_answer' doit être un entier entre 0 et 3.")
 
                 return questions["questions"]
 
             except json.JSONDecodeError as e:
-                logger.error(f"JSON parsing failed: {e}")
-                logger.error(f"Attempted to parse: {cleaned_response}")
-                return {"status": "error", "message": f"Erreur lors de la génération des questions - format JSON invalide: {str(e)}"}
+                logger.error(f"Erreur de parsing JSON : {e}")
+                logger.error(f"Réponse JSON brute : {cleaned_response}")
+                return {"status": "error", "message": f"Erreur de parsing JSON : {str(e)}"}
             except ValueError as e:
-                logger.error(f"JSON validation failed: {e}")
-                return {"status": "error", "message": f"Erreur lors de la validation des questions: {str(e)}"}
+                logger.error(f"Validation des questions échouée : {e}")
+                return {"status": "error", "message": f"Erreur de validation des questions : {str(e)}"}
 
         except Exception as e:
-            logger.error(f"Error generating quiz: {e}")
-            return {"status": "error", "message": f"Erreur lors de la génération du quiz: {str(e)}"}
+            logger.error(f"Erreur dans generate_quiz: {e}")
+            return {"status": "error", "message": f"Erreur inattendue : {str(e)}"}
+
+        
+    # def generate_quiz(self, file_hashes: List[str], num_questions=5, bloom_level=None):
+    #     try:
+    #         if not file_hashes:
+    #             return {"status": "error", "message": "Aucun document sélectionné."}
+
+    #         # Retrieve all chunks for the given file hashes
+    #         chunks = []
+    #         missing_hashes = []
+    #         chunk_counts = {}
+    #         for file_hash in file_hashes:
+    #             results = self.collection.get(where={"file_hash": file_hash})
+    #             if not results['documents']:
+    #                 logger.warning(f"No documents found for hash {file_hash}")
+    #                 missing_hashes.append(file_hash)
+    #                 continue
+    #             chunk_counts[file_hash] = len(results['documents'])
+    #             chunks.extend(results['documents'])
+
+    #         if not chunks:
+    #             return {"status": "error", "message": f"Aucun document trouvé pour les hashes fournis: {', '.join(missing_hashes)}."}
+
+    #         logger.info(f"Found {len(chunks)} chunks for file hashes {file_hashes}: {chunk_counts}")
+    #         full_text = "\n".join(chunks)
+
+    #         bloom_instruction = (
+    #             f"Les questions doivent correspondre au niveau de la taxonomie de Bloom : {bloom_level}. "
+    #             if bloom_level else
+    #             "Inclure un mélange de questions de connaissance, compréhension et application. "
+    #         )
+
+    #         prompt = (
+    #             f"Voici le contenu de plusieurs documents :\n\n{full_text}\n\n"
+    #             f"Génère EXACTEMENT {num_questions} questions QCM basées sur le contenu des documents. "
+    #             f"Chaque question doit avoir 4 options de réponse, avec une seule réponse correcte. "
+    #             f"{bloom_instruction}"
+    #             f"IMPORTANT: Le champ 'bloom_level' doit être EXACTEMENT l'un des suivants : 'knowledge', 'comprehension', 'application'. "
+    #             f"Ne pas utiliser d'autres termes comme 'understanding'. "
+    #             f"Retourne UNIQUEMENT un objet JSON valide avec la structure exacte suivante, SANS tableau extérieur, SANS formatage markdown, SANS ```json ni ``` :\n"
+    #             f'{{"questions": [{{"question": "Exemple", "options": ["A", "B", "C", "D"], "correct_answer": 0, "bloom_level": "knowledge"}},]}}\n'
+    #             f"Réponse JSON :"
+    #         )
+
+    #         response = self.ollama_api.chat_with_ollama(prompt)
+    #         logger.info(f"Raw quiz response: {response}")
+
+    #         cleaned_response = self._clean_json_response(response)
+    #         logger.info(f"Cleaned quiz response: {cleaned_response}")
+
+    #         try:
+    #             questions = json.loads(cleaned_response)
+
+    #             if isinstance(questions, list):
+    #                 questions = {"questions": questions[:num_questions]}
+    #                 logger.info(f"Converted array to questions object with {len(questions['questions'])} questions")
+
+    #             logger.info(f"Parsed JSON: {json.dumps(questions, indent=2)}")
+
+    #             if not isinstance(questions, dict) or "questions" not in questions:
+    #                 raise ValueError("Invalid JSON structure: expected object with 'questions' key")
+
+    #             if not isinstance(questions["questions"], list):
+    #                 raise ValueError("Questions must be a list")
+
+    #             if len(questions["questions"]) != num_questions:
+    #                 logger.warning(f"Received {len(questions['questions'])} questions, expected {num_questions}")
+
+    #             for q in questions["questions"]:
+    #                 if q.get("bloom_level") == "understanding":
+    #                     q["bloom_level"] = "comprehension"
+    #                     logger.info(f"Mapped 'understanding' to 'comprehension' for question: {q['question']}")
+
+    #                 required_fields = ["question", "options", "correct_answer", "bloom_level"]
+    #                 for field in required_fields:
+    #                     if field not in q:
+    #                         raise ValueError(f"Missing field '{field}' in question")
+
+    #                 if not isinstance(q["options"], list) or len(q["options"]) != 4:
+    #                     raise ValueError("Question must have exactly 4 options")
+
+    #                 if not isinstance(q["correct_answer"], int) or q["correct_answer"] not in [0, 1, 2, 3]:
+    #                     raise ValueError("Correct_answer must be 0, 1, 2, or 3")
+
+    #             return questions["questions"]
+
+    #         except json.JSONDecodeError as e:
+    #             logger.error(f"JSON parsing failed: {e}")
+    #             logger.error(f"Attempted to parse: {cleaned_response[:300]}...")
+    #             return {"status": "error", "message": f"Erreur lors de la génération des questions - format JSON invalide: {str(e)}"}
+
+    #         except ValueError as e:
+    #             logger.error(f"JSON validation failed: {e}")
+    #             return {"status": "error", "message": f"Erreur lors de la validation des questions: {str(e)}"}
+
+    #     except Exception as e:
+    #         logger.error(f"Error generating quiz: {e}")
+    #         return {"status": "error", "message": f"Erreur lors de la génération du quiz: {str(e)}"}
 
     def _clean_json_response(self, response):
         cleaned = str(response).strip()
 
-        # Remove markdown code fences
+        # Supprimer les blocs de code Markdown
         if cleaned.startswith('```json'):
             cleaned = cleaned[7:]
         elif cleaned.startswith('```'):
             cleaned = cleaned[3:]
-
         if cleaned.endswith('```'):
             cleaned = cleaned[:-3]
 
         cleaned = cleaned.strip()
-        logger.info(f"Cleaned JSON response: {cleaned}")
-        return cleaned
+
+        # Trouver la première accolade ouvrante et extraire à partir de là
+        match = re.search(r'({.*)', cleaned, re.DOTALL)
+        if match:
+            cleaned_json = match.group(1).strip()
+            logger.info(f"Cleaned JSON response: {cleaned_json}")
+            return cleaned_json
+        else:
+            logger.error("Aucune structure JSON détectée dans la réponse.")
+            return ""
+
 
     # def recommend_resources(self, user_id, filiere_id, module_id):
     #     try:
