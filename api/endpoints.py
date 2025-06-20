@@ -426,3 +426,38 @@ def debug_delete_document(file_hash: str):
             return {"message": "No document found with that hash"}
     except Exception as e:
         return {"error": str(e)}
+    
+@router.delete("/documents/{file_hash}")
+def delete_document_endpoint(file_hash: str):
+    """Delete a document from both ChromaDB and SQLite metadata"""
+    try:
+        # Delete from SQLite first
+        sqlite_result = filter_manager.delete_document_by_hash(file_hash)
+        
+        if sqlite_result["status"] == "error":
+            raise HTTPException(status_code=404, detail=sqlite_result["message"])
+        
+        # Delete from ChromaDB
+        try:
+            results = chatbot.collection.get(where={"file_hash": file_hash})
+            if results['ids']:
+                chatbot.collection.delete(ids=results['ids'])
+                chromadb_deleted = len(results['ids'])
+            else:
+                chromadb_deleted = 0
+        except Exception as e:
+            logger.warning(f"Error deleting from ChromaDB: {e}")
+            chromadb_deleted = 0
+        
+        return {
+            "status": "success",
+            "message": f"Document deleted successfully. SQLite chunks: {sqlite_result['deleted_chunks']}, ChromaDB chunks: {chromadb_deleted}",
+            "sqlite_deleted": sqlite_result['deleted_chunks'],
+            "chromadb_deleted": chromadb_deleted
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in delete document endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")

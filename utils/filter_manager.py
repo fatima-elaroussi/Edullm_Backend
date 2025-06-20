@@ -108,47 +108,99 @@ class FilterManager:
         finally:
             conn.close()
 
+    # def get_documents_ingested(self):
+    #     conn = sqlite3.connect(self.db_path)
+    #     cursor = conn.cursor()
+    #     try:
+    #         cursor.execute("""
+    #             SELECT DISTINCT dm.base_filename, dm.file_hash, dm.chunk_text, dm.user_id, dm.date_Ingestion,
+    #                 d.nom as departement, f.nom as filiere, m.nom as module, a.nom as activite, p.nom as profile
+    #             FROM document_metadata dm
+    #             LEFT JOIN departements d ON dm.departement_id = d.id
+    #             LEFT JOIN filieres f ON dm.filiere_id = f.id
+    #             LEFT JOIN modules m ON dm.module_id = m.id
+    #             LEFT JOIN activites a ON dm.activite_id = a.id
+    #             LEFT JOIN profile p ON dm.profile_id = p.id
+    #             ORDER BY dm.file_hash, dm.chunk_index
+    #         """)
+    #         rows = cursor.fetchall()
+    #         documents = {}
+    #         for row in rows:
+    #             base_filename, file_hash, chunk_text, user_id, date_ingestion, dep, fil, mod, act, prof = row
+    #             if file_hash not in documents:
+    #                 documents[file_hash] = {
+    #                     "base_filename": base_filename,
+    #                     "file_hash": file_hash,
+    #                     "user_id": user_id,
+    #                     "date_Ingestion": date_ingestion,
+    #                     "departement": dep,
+    #                     "filiere": fil,
+    #                     "module": mod,
+    #                     "activite": act,
+    #                     "profile": prof,
+    #                     "chunks": []
+    #                 }
+    #             documents[file_hash]["chunks"].append(chunk_text)
+    #         result = []
+    #         for doc in documents.values():
+    #             result.append({
+    #                 **doc,
+    #                 "nb_chunks": len(doc["chunks"]),
+    #                 "taille_estimee": round(sum(len(c) for c in doc["chunks"]) / 1024, 2)
+    #             })
+    #         return result
+    #     except Exception as e:
+    #         logger.error(f"Error getting ingested documents: {e}")
+    #         return []
+    #     finally:
+    #         conn.close()
+
     def get_documents_ingested(self):
+        """Fixed version with correct field names for frontend"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
             cursor.execute("""
-                SELECT DISTINCT dm.base_filename, dm.file_hash, dm.chunk_text, dm.user_id, dm.date_Ingestion,
-                    d.nom as departement, f.nom as filiere, m.nom as module, a.nom as activite, p.nom as profile
+                SELECT DISTINCT dm.base_filename, dm.file_hash, dm.user_id, dm.date_Ingestion,
+                    dm.departement_id, dm.filiere_id, dm.module_id, dm.activite_id, dm.profile_id,
+                    d.nom as departement_name, f.nom as filiere_name, m.nom as module_name, 
+                    a.nom as activite_name, p.nom as profile_name,
+                    COUNT(dm.chunk_index) as chunk_count,
+                    SUM(LENGTH(dm.chunk_text)) as total_size
                 FROM document_metadata dm
                 LEFT JOIN departements d ON dm.departement_id = d.id
                 LEFT JOIN filieres f ON dm.filiere_id = f.id
                 LEFT JOIN modules m ON dm.module_id = m.id
                 LEFT JOIN activites a ON dm.activite_id = a.id
                 LEFT JOIN profile p ON dm.profile_id = p.id
-                ORDER BY dm.file_hash, dm.chunk_index
+                GROUP BY dm.file_hash
+                ORDER BY dm.date_Ingestion DESC
             """)
             rows = cursor.fetchall()
-            documents = {}
+            
+            documents = []
             for row in rows:
-                base_filename, file_hash, chunk_text, user_id, date_ingestion, dep, fil, mod, act, prof = row
-                if file_hash not in documents:
-                    documents[file_hash] = {
-                        "base_filename": base_filename,
-                        "file_hash": file_hash,
-                        "user_id": user_id,
-                        "date_Ingestion": date_ingestion,
-                        "departement": dep,
-                        "filiere": fil,
-                        "module": mod,
-                        "activite": act,
-                        "profile": prof,
-                        "chunks": []
-                    }
-                documents[file_hash]["chunks"].append(chunk_text)
-            result = []
-            for doc in documents.values():
-                result.append({
-                    **doc,
-                    "nb_chunks": len(doc["chunks"]),
-                    "taille_estimee": round(sum(len(c) for c in doc["chunks"]) / 1024, 2)
+                documents.append({
+                    "filename": row[0],  # base_filename -> filename for frontend
+                    "file_hash": row[1],
+                    "user_id": row[2],
+                    "ingestion_date": row[3],  # date_Ingestion -> ingestion_date for frontend
+                    "departement_id": row[4],
+                    "filiere_id": row[5],
+                    "module_id": row[6],
+                    "activite_id": row[7],
+                    "profile_id": row[8],
+                    "departement_name": row[9],
+                    "filiere_name": row[10],
+                    "module_name": row[11],
+                    "activite_name": row[12],
+                    "profile_name": row[13],
+                    "nb_chunks": row[14],
+                    "taille_estimee": round(row[15] / 1024, 2) if row[15] else 0  # Convert to KB
                 })
-            return result
+            
+            return documents
+            
         except Exception as e:
             logger.error(f"Error getting ingested documents: {e}")
             return []
@@ -439,3 +491,35 @@ class FilterManager:
             return []
         finally:
             conn.close()
+    
+    def delete_document_by_hash(self, file_hash: str) -> dict:
+        """Delete a document and all its chunks from both SQLite and potentially ChromaDB"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if document exists
+            cursor.execute("SELECT COUNT(*) FROM document_metadata WHERE file_hash = ?", (file_hash,))
+            count = cursor.fetchone()[0]
+            
+            if count == 0:
+                conn.close()
+                return {"status": "error", "message": "Document not found in database"}
+            
+            # Delete from document_metadata
+            cursor.execute("DELETE FROM document_metadata WHERE file_hash = ?", (file_hash,))
+            deleted_count = cursor.rowcount
+            
+            conn.commit()
+            conn.close()
+            
+            return {
+                "status": "success", 
+                "message": f"Deleted {deleted_count} chunks for document {file_hash}",
+                "deleted_chunks": deleted_count
+            }
+            
+        except Exception as e:
+            logger.error(f"Error deleting document {file_hash}: {e}")
+            return {"status": "error", "message": str(e)}
+
