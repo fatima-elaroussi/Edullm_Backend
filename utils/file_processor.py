@@ -4,6 +4,9 @@ import json
 import PyPDF2
 from docx import Document
 from .EDA_Cleaner import TextPipeline, TextCleaner
+import logging
+
+logger = logging.getLogger(__name__)
 
 class FileProcessor:
     def __init__(self, chunk_size=850, chunk_overlap=130):
@@ -54,14 +57,46 @@ class FileProcessor:
             start += self.chunk_size - self.chunk_overlap
         return chunks
 
-    def process_file(self, file_path):
-        content = self.read_file(file_path)
-        file_hash = self.calculate_hash(content)
-        if file_hash in self.processed_hashes:
-            return None, file_hash
-        self.processed_hashes.add(file_hash)
-        cleaner = TextCleaner()
-        pipeline = TextPipeline(cleaner)
-        cleaned_content = pipeline.process(content)
-        chunks = self.split_into_chunks(cleaned_content)
-        return chunks, file_hash
+    def process_file(self, file_path, force_reprocess=False):
+        """
+        Process a file and return chunks and hash
+        
+        Args:
+            file_path: Path to the file
+            force_reprocess: If True, reprocess even if already processed
+            
+        Returns:
+            Tuple of (chunks, file_hash) or (None, file_hash) if already processed
+        """
+        try:
+            content = self.read_file(file_path)
+            file_hash = self.calculate_hash(content)
+            
+            if not force_reprocess and file_hash in self.processed_hashes:
+                logger.info(f"File {file_path} already processed (hash: {file_hash})")
+                return None, file_hash
+            
+            self.processed_hashes.add(file_hash)
+            
+            # Clean the content
+            cleaner = TextCleaner()
+            pipeline = TextPipeline(cleaner)
+            cleaned_content = pipeline.process(content)
+            
+            # Split into chunks
+            chunks = self.split_into_chunks(cleaned_content)
+            
+            logger.info(f"Processed file {file_path}: {len(chunks)} chunks created")
+            return chunks, file_hash
+            
+        except Exception as e:
+            logger.error(f"Error processing file {file_path}: {e}")
+            raise
+
+    def clear_processed_hashes(self):
+        """Clear the set of processed hashes"""
+        self.processed_hashes.clear()
+        
+    def remove_from_processed(self, file_hash):
+        """Remove a specific hash from processed hashes"""
+        self.processed_hashes.discard(file_hash)

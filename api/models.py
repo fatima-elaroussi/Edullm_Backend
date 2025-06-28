@@ -42,7 +42,7 @@ class IngestRequest(BaseModel):
          user_id: int
 
 class SummarizeRequest(BaseModel):
-         file_hash: str
+         file_hashes: List[str]  # Updated to accept a list of file hashes
          level: Literal["simplified", "detailed"]
 
 class QuizQuestion(BaseModel):
@@ -52,7 +52,7 @@ class QuizQuestion(BaseModel):
          bloom_level: Literal["knowledge", "comprehension", "application"]
 
 class QuizRequest(BaseModel):
-         file_hash: str
+         file_hashes: List[str]  # Updated to accept a list of file hashes
          num_questions: int = 5
          bloom_level: Optional[Literal["knowledge", "comprehension", "application"]] = None
 
@@ -85,3 +85,18 @@ class Activite(BaseModel):
          id: Optional[int] = None
          nom: str
          module_id: int
+
+class UpdateUserRequest(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    profile_id: Optional[int] = None
+    filiere_id: Optional[int] = None
+    annee: Optional[str] = None
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    profile_id: int
+    filiere_id: Optional[int]
+    annee_scolaire: Optional[str]
+    created_at: Optional[str] = None
