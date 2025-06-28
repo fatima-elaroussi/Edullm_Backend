@@ -300,102 +300,7 @@ class RAGChatbot:
             return {"status": "error", "message": f"Erreur inattendue : {str(e)}"}
 
         
-    # def generate_quiz(self, file_hashes: List[str], num_questions=5, bloom_level=None):
-    #     try:
-    #         if not file_hashes:
-    #             return {"status": "error", "message": "Aucun document sélectionné."}
-
-    #         # Retrieve all chunks for the given file hashes
-    #         chunks = []
-    #         missing_hashes = []
-    #         chunk_counts = {}
-    #         for file_hash in file_hashes:
-    #             results = self.collection.get(where={"file_hash": file_hash})
-    #             if not results['documents']:
-    #                 logger.warning(f"No documents found for hash {file_hash}")
-    #                 missing_hashes.append(file_hash)
-    #                 continue
-    #             chunk_counts[file_hash] = len(results['documents'])
-    #             chunks.extend(results['documents'])
-
-    #         if not chunks:
-    #             return {"status": "error", "message": f"Aucun document trouvé pour les hashes fournis: {', '.join(missing_hashes)}."}
-
-    #         logger.info(f"Found {len(chunks)} chunks for file hashes {file_hashes}: {chunk_counts}")
-    #         full_text = "\n".join(chunks)
-
-    #         bloom_instruction = (
-    #             f"Les questions doivent correspondre au niveau de la taxonomie de Bloom : {bloom_level}. "
-    #             if bloom_level else
-    #             "Inclure un mélange de questions de connaissance, compréhension et application. "
-    #         )
-
-    #         prompt = (
-    #             f"Voici le contenu de plusieurs documents :\n\n{full_text}\n\n"
-    #             f"Génère EXACTEMENT {num_questions} questions QCM basées sur le contenu des documents. "
-    #             f"Chaque question doit avoir 4 options de réponse, avec une seule réponse correcte. "
-    #             f"{bloom_instruction}"
-    #             f"IMPORTANT: Le champ 'bloom_level' doit être EXACTEMENT l'un des suivants : 'knowledge', 'comprehension', 'application'. "
-    #             f"Ne pas utiliser d'autres termes comme 'understanding'. "
-    #             f"Retourne UNIQUEMENT un objet JSON valide avec la structure exacte suivante, SANS tableau extérieur, SANS formatage markdown, SANS ```json ni ``` :\n"
-    #             f'{{"questions": [{{"question": "Exemple", "options": ["A", "B", "C", "D"], "correct_answer": 0, "bloom_level": "knowledge"}},]}}\n'
-    #             f"Réponse JSON :"
-    #         )
-
-    #         response = self.ollama_api.chat_with_ollama(prompt)
-    #         logger.info(f"Raw quiz response: {response}")
-
-    #         cleaned_response = self._clean_json_response(response)
-    #         logger.info(f"Cleaned quiz response: {cleaned_response}")
-
-    #         try:
-    #             questions = json.loads(cleaned_response)
-
-    #             if isinstance(questions, list):
-    #                 questions = {"questions": questions[:num_questions]}
-    #                 logger.info(f"Converted array to questions object with {len(questions['questions'])} questions")
-
-    #             logger.info(f"Parsed JSON: {json.dumps(questions, indent=2)}")
-
-    #             if not isinstance(questions, dict) or "questions" not in questions:
-    #                 raise ValueError("Invalid JSON structure: expected object with 'questions' key")
-
-    #             if not isinstance(questions["questions"], list):
-    #                 raise ValueError("Questions must be a list")
-
-    #             if len(questions["questions"]) != num_questions:
-    #                 logger.warning(f"Received {len(questions['questions'])} questions, expected {num_questions}")
-
-    #             for q in questions["questions"]:
-    #                 if q.get("bloom_level") == "understanding":
-    #                     q["bloom_level"] = "comprehension"
-    #                     logger.info(f"Mapped 'understanding' to 'comprehension' for question: {q['question']}")
-
-    #                 required_fields = ["question", "options", "correct_answer", "bloom_level"]
-    #                 for field in required_fields:
-    #                     if field not in q:
-    #                         raise ValueError(f"Missing field '{field}' in question")
-
-    #                 if not isinstance(q["options"], list) or len(q["options"]) != 4:
-    #                     raise ValueError("Question must have exactly 4 options")
-
-    #                 if not isinstance(q["correct_answer"], int) or q["correct_answer"] not in [0, 1, 2, 3]:
-    #                     raise ValueError("Correct_answer must be 0, 1, 2, or 3")
-
-    #             return questions["questions"]
-
-    #         except json.JSONDecodeError as e:
-    #             logger.error(f"JSON parsing failed: {e}")
-    #             logger.error(f"Attempted to parse: {cleaned_response[:300]}...")
-    #             return {"status": "error", "message": f"Erreur lors de la génération des questions - format JSON invalide: {str(e)}"}
-
-    #         except ValueError as e:
-    #             logger.error(f"JSON validation failed: {e}")
-    #             return {"status": "error", "message": f"Erreur lors de la validation des questions: {str(e)}"}
-
-    #     except Exception as e:
-    #         logger.error(f"Error generating quiz: {e}")
-    #         return {"status": "error", "message": f"Erreur lors de la génération du quiz: {str(e)}"}
+   
 
     def _clean_json_response(self, response):
         cleaned = str(response).strip()
@@ -421,33 +326,7 @@ class RAGChatbot:
             return ""
 
 
-    # def recommend_resources(self, user_id, filiere_id, module_id):
-    #     try:
-    #         gaps = self.filter_manager.analyze_gaps(user_id, filiere_id, module_id)
-    #         if not gaps:
-    #             return []
-
-    #         from googleapiclient.discovery import build
-    #         youtube = build('youtube', 'v3', developerKey='YOUR_YOUTUBE_API_KEY')
-
-    #         resources = []
-    #         for gap in gaps:
-    #             query = f"{gap} tutorial BDIA"
-    #             request = youtube.search().list(q=query, part='snippet', maxResults=3)
-    #             response = request.execute()
-
-    #             for item in response['items']:
-    #                 if 'videoId' in item['id']:
-    #                     resources.append({
-    #                         "title": item['snippet']['title'],
-    #                         "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}"
-    #                     })
-    #         return resources
-
-    #     except Exception as e:
-    #         logger.error(f"Error recommending resources: {e}")
-    #         return []
-
+   
     def recommend_resources(self, user_id, filiere_id, module_id):
         try:
             gaps = self.filter_manager.analyze_gaps(user_id, filiere_id, module_id)
